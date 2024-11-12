@@ -1,0 +1,122 @@
+--- mod_xml_radius.c.orig	2015-11-26 06:08:23.000000000 +0500
++++ mod_xml_radius.c	2015-11-27 17:05:12.155245414 +0500
+@@ -56,6 +56,10 @@
+  */
+ int GLOBAL_TIME_FORMAT = 0;
+ char *GLOBAL_TIME_ZONE = "UTC";
++
++char *GLOBAL_unauth_context=NULL;
++char *GLOBAL_timeout_context=NULL;
++
+ static char radattrdays[7][4] = {
+ 	"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+ };
+@@ -220,6 +224,21 @@
+ 				GLOBAL_DEBUG = atoi(value);
+ 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Debug changed to %d\n", GLOBAL_DEBUG);
+ 			}
++			
++			if ( strncmp(name, "unauth_context", 13) == 0 ) {
++				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Find unauth_context\n");
++				if ( strlen(value)> 0 ) {
++					GLOBAL_unauth_context=strdup(value);
++					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "unauth_context set to %s\n",value);
++				}
++			}
++			if ( strncmp(name, "timeout_context", 15) == 0 ) {
++				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Find timeout_context\n");
++				if ( strlen(value)> 0 ) {
++					GLOBAL_timeout_context=strdup(value);
++					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "timeout_context set to %s\n",value);
++				}
++			}
+ 		}
+ 	}
+ 
+@@ -647,7 +666,7 @@
+ 	if (GLOBAL_DEBUG ) {
+ 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: starting invite authentication\n");
+ 	}
+-	
++
+ 	if ( mod_xml_radius_new_handle(&new_handle, globals.auth_invite_configs) != SWITCH_STATUS_SUCCESS ) {
+ 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to load radius handle for digest invite authentication\n");
+ 		goto err;		
+@@ -677,10 +696,13 @@
+ 	if ( GLOBAL_DEBUG ){
+ 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: result(RC=%d) %s \n", result, msg);
+ 	}
+-	
+-	if ( result != 0 ) {
+-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: Failed to authenticate\n");
+-		goto err;
++
++	if ( result != OK_RC ) {
++		if (GLOBAL_unauth_context==NULL) {
++			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: Failed to authenticate, result: %d\n", result);
++			goto err;
++		}
++		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: Transfer call to global section in declared context\n");
+ 	}
+ 
+ 	xml = switch_xml_new("document");
+@@ -691,26 +713,40 @@
+ 	switch_xml_set_attr_d(dom, "name", switch_event_get_header(params, "domain"));
+ 	usr = switch_xml_add_child_d(dom, "user", 0);
+ 	vars = switch_xml_add_child_d(usr, "variables", 0);
+-	
++
+ 	switch_xml_set_attr_d(usr, "id", switch_event_get_header(params, "user"));
+-		
+-	var = switch_xml_add_child_d(vars, "variable", param_idx++);
+-	switch_xml_set_attr_d(var, "name", "radius_auth_result");
+-	switch_xml_set_attr_d(var, "value", "0");
+-
+-	service_vp = recv;
+-	while (service_vp != NULL) {
+-		rc_avpair_tostr(new_handle, service_vp, name, 512, value, 512);
+-		if ( GLOBAL_DEBUG )
+-			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "\tattribute (%s)[%s] found in radius packet\n", name, value);
+-		var = switch_xml_add_child_d(vars, "variable", param_idx++);
+-		strtmp = strdup(name);
+-		switch_xml_set_attr_d(var, "name", strtmp);
+-		free(strtmp);
+-		strtmp = strdup(value);
+-		switch_xml_set_attr_d(var, "value", strtmp);
+-		free(strtmp);
+-		service_vp = service_vp->next;
++
++	if ( result == OK_RC ) {
++		service_vp = recv;
++		while (service_vp != NULL) {
++			rc_avpair_tostr(new_handle, service_vp, name, 512, value, 512);
++			if ( GLOBAL_DEBUG )
++				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "\tattribute (%s)[%s] found in radius packet\n", name, value);
++			var = switch_xml_add_child_d(vars, "variable", param_idx++);
++			strtmp = strdup(name);
++			switch_xml_set_attr_d(var, "name", strtmp);
++			free(strtmp);
++			strtmp = strdup(value);
++			switch_xml_set_attr_d(var, "value", strtmp);
++			free(strtmp);
++			service_vp = service_vp->next;
++		}
++	} else if (result == TIMEOUT_RC) {
++		if (strlen(GLOBAL_timeout_context)>0) {
++			var = switch_xml_add_child_d(vars, "variable", param_idx);
++			switch_xml_set_attr_d(var, "name", "user_context");
++			switch_xml_set_attr_d(var, "value", GLOBAL_timeout_context);
++			if ( GLOBAL_DEBUG )
++				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Auth timeout, transfer to context %s\n", GLOBAL_timeout_context);
++		}
++	} else {
++		if (strlen(GLOBAL_unauth_context)>0) {
++			var = switch_xml_add_child_d(vars, "variable", param_idx);
++			switch_xml_set_attr_d(var, "name", "user_context");
++			switch_xml_set_attr_d(var, "value", GLOBAL_unauth_context);
++			if ( GLOBAL_DEBUG )
++				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Invite not auth, transfer to context %s\n", GLOBAL_unauth_context);
++		}
+ 	}
+ 
+ 	if ( GLOBAL_DEBUG ) {

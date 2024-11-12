@@ -1,0 +1,203 @@
+--- mod_xml_radius.c	2015-12-01 20:02:05.078912159 +0500
++++ mod_xml_radius.c.orig	2015-12-01 20:02:59.162910287 +0500
+@@ -118,6 +118,86 @@
+ 	return SWITCH_STATUS_GENERR;
+ }
+ 
++
++char* mod_xml_regex_var(char* var,switch_xml_t fields,switch_core_session_t *session,switch_event_t *params)
++{
++	switch_regex_t *re = NULL;
++	char* result=NULL; 
++	char* rule_name=NULL; 
++	const char *tmp = NULL; 
++	int ovector[30];
++	size_t len = 0;
++	int proceed = 0;
++	switch_xml_t condition=NULL,rule=NULL,name=NULL; 
++
++	if(var &&  fields) {
++		if ((name = switch_xml_child(fields, var)) != NULL ) {
++			rule_name = (char *) switch_xml_attr(name, "name");
++			if ( GLOBAL_DEBUG )
++				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: Find config for %s\n",var);
++			for (rule = switch_xml_child(name, "rule"); rule; rule = rule->next) {
++				char *name_rule = (char *) switch_xml_attr(rule, "name");
++				if ( GLOBAL_DEBUG )
++					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: Find rule %s\n",name_rule);
++				for (condition = switch_xml_child(rule, "condition"); condition; condition = condition->next) {
++					char *variable = (char *) switch_xml_attr(condition, "variable");
++					char *regex = (char *) switch_xml_attr(condition, "regex");
++					char *res=(char *) switch_xml_attr(condition, "result");
++					switch_channel_t *channel=NULL;
++
++					if (GLOBAL_DEBUG)
++						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: Read from config  variabe=%s  regex=%s  result=%s\n",variable, regex,res);
++					if (variable==NULL) {
++						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: Radius atribute %s  rule=%s  variable not correct\n",var, rule_name);
++						break;
++					}
++					if (regex==NULL) {
++						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: Radius atribute %s  rule=%s  regex not correct\n",var, rule_name);
++						break;
++					}
++					if (session) {
++						channel=switch_core_session_get_channel(session);
++						if (channel==NULL) {
++							switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: channel incorect\n");
++							break;
++						}
++						tmp = switch_channel_get_variable(channel, variable);
++					} else {
++						tmp = switch_event_get_header(params, variable);
++					}
++					if (tmp==NULL) {
++						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: variable %s  rule=%s  not found in channel variables\n",var, rule_name);
++						break;
++					}
++
++					if (GLOBAL_DEBUG)
++						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: variable %s\n",tmp);
++
++					proceed = switch_regex_perform(tmp, regex, &re, ovector, sizeof(ovector) / sizeof(ovector[0]));
++					if (proceed < 1) {
++						if ( GLOBAL_DEBUG )
++							switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: not condition\n");
++						break;
++					}
++					if (res != NULL) {
++						len = (strlen(variable) + strlen(regex) + 10) * proceed;
++						result = malloc(len);
++						switch_assert(result);
++						memset(result, 0, len);
++						switch_perform_substitution(re, proceed, res, tmp, result, len, ovector);
++						if ( GLOBAL_DEBUG )
++							switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: Finded regex for variable %s  regex=%s  value=%s  data=%s    result=%s\n",var, regex,tmp,res,result);
++						return result;
++					}
++				}
++			}
++		}
++	}
++	return result;
++}
++
++
++
+ switch_status_t do_config() 
+ {
+ 	char *conf = "xml_radius.conf";
+@@ -375,7 +455,8 @@
+ 		DICT_ATTR *attribute = NULL;
+ 		DICT_VENDOR *vendor = NULL;
+ 		int attr_num = 0, vend_num = 0;
+-		
++		char* result=NULL;
++
+ 		char *var = (char *) switch_xml_attr(param, "name");
+ 		char *vend = (char *) switch_xml_attr(param, "vendor");
+ 		char *variable = (char *) switch_xml_attr(param, "variable");
+@@ -384,7 +465,7 @@
+ 		char *skip_if_set = (char *) switch_xml_attr(param, "skip_if_set");
+ 		char *format = (char *) switch_xml_attr(param, "format");
+ 		char *other_leg = (char *) switch_xml_attr(param, "other_leg");
+-                char *regex = (char *) switch_xml_attr(param, "regex");
++		char *regex = (char *) switch_xml_attr(param, "regex");
+ 
+ 		attribute = rc_dict_findattr(handle, var);
+ 		
+@@ -549,28 +630,56 @@
+ 						}
+ 						
+ 						if ( regex && val ) {
+-                                                        switch_regex_t *re = NULL;
+-                                                        int ovector[30];
+-                                                        int proceed;
+-                                                        char replace[1024] = "";
+-                                                        proceed = 0;
+-                                                        proceed = switch_regex_perform(val, regex, &re, ovector, sizeof(ovector) / sizeof(ovector[0]));
+-                                                        if ( proceed > 0 ) {
+-                                                            switch_regex_copy_substring(val, ovector, proceed, proceed - 1, replace, sizeof(replace));
+-							    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "original value: %s, regex: %s, result: %s\n", val, regex, replace);
+-                                                            val = replace;
+-                                                        }
+-                                                        else {
+-							    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "original value: %s, regex: %s, result: nomatch, value left intact\n", val, regex);
+-                                                        }
+-                                                        switch_regex_safe_free(re);
++							switch_regex_t *re = NULL;
++							int ovector[30];
++							int proceed;
++							char replace[1024] = "";
++							proceed = 0;
++							proceed = switch_regex_perform(val, regex, &re, ovector, sizeof(ovector) / sizeof(ovector[0]));
++							if ( proceed > 0 ) {
++								switch_regex_copy_substring(val, ovector, proceed, proceed - 1, replace, sizeof(replace));
++								switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "original value: %s, regex: %s, result: %s\n", val, regex, replace);
++								val = replace;
++							} else {
++								switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "original value: %s, regex: %s, result: nomatch, value left intact\n", val, regex);
++							}
++							switch_regex_safe_free(re);
+ 						}
+ 						
+ 						if ( val == NULL && val_default != NULL) {
+-							av_value = switch_mprintf(format, val_default);							
++							av_value = switch_mprintf(format, val_default);
++						} else {
++							result=mod_xml_regex_var(var,fields,session,params);
++							if (result==NULL) {
++								av_value = switch_mprintf(format, val);
++							} else {
++								if ( GLOBAL_DEBUG )
++									switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: name=%s value=%s  changed to value=%s\n",var, val,result);
++								av_value = switch_mprintf(format, result);
++								free(result);
++								result=NULL;
++							}
++						}
++
++						result=mod_xml_regex_var(var,fields,session,params);
++						if (result==NULL) {
++							if (val == NULL && val_default != NULL) {
++								av_value = switch_mprintf(format, val_default);
++							} else if (val!=NULL) {
++								av_value = switch_mprintf(format, val);
++							} else {
++								switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: name=%s not set\n",var);
++							}
+ 						} else {
+-							av_value = switch_mprintf(format, val);
++							if ( GLOBAL_DEBUG )
++								switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: name=%s value=%s  changed to value=%s\n",var, val,result);
++							av_value = switch_mprintf(format, result);
++							free(result);
++							result=NULL;
+ 						}
++
++
++
+ 						
+ 						if ( GLOBAL_DEBUG ) {
+ 							switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: value: %s\n", (char *) av_value);
+@@ -608,8 +717,18 @@
+ 					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: Unable to locate '%s' on the event\n", variable);
+ 					goto err;					
+ 				}
+-				
+-				av_value = switch_mprintf(format, tmp);
++
++				result=mod_xml_regex_var(var,fields,session,params);
++				if (result==NULL) {
++						av_value = switch_mprintf(format, tmp);
++				} else {
++					if ( GLOBAL_DEBUG )
++						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: name=%s value=%s  changed to value=%s\n",var, tmp,result);
++					av_value = switch_mprintf(format, result);
++					free(result);
++					result=NULL;
++				}
++
+ 				if (rc_avpair_add(handle, send, attr_num, av_value, -1, vend_num) == NULL) {
+ 					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_xml_radius: failed to add option to handle\n");
+ 					goto err;
